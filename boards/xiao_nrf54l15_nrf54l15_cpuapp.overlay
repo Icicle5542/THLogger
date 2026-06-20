@@ -1,0 +1,13 @@
+/*
+ * DHT20 temperature and humidity sensor on the XIAO I2C bus
+ * DHT20 has a fixed I2C address of 0x38
+ */
+
+&xiao_i2c {
+	status = "okay";
+
+	dht20: dht20@38 {
+		compatible = "aosong,dht20";
+		reg = <0x38>;
+	};
+};
