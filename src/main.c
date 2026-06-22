@@ -21,6 +21,7 @@
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/fs/nvs.h>
 #include <zephyr/drivers/flash.h>
+#include <zephyr/storage/flash_map.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/timeutil.h>
@@ -42,7 +43,7 @@ static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 #define NVS_KEY_ENTRY_BASE  10u   /* keys 10 … 10+MAX_LOG_ENTRIES-1  */
 
 /*
- * NVS partition is now 512 KB (128 × 4 KB RRAM pages) via pm_static.yml.
+ * NVS partition: 512 KB (128 × 4 KB RRAM pages), defined in the DTS overlay.
  * Usable space: 127 sectors × 4096 B = 520,192 B.
  * Per entry: 32 B data + 8 B NVS ATE = 40 B  →  max ≈ 13,000 entries.
  * 10,000 entries × 40 B = 400,000 B — well within budget.
@@ -402,29 +403,20 @@ static int parse_time_str(const char *s, int *hh, int *mm, int *ss)
 static int nvs_init_storage(void)
 {
 	/*
-	 * The NCS PM subsystem (triggered by CONFIG_NVS=y) generates a DTS
-	 * overlay that replaces the storage_partition nodelabel with a virtual
-	 * "nvs_storage" node.  That virtual node has no reg property, so
-	 * DT_REG_ADDR / DT_REG_SIZE / DT_MTD_FROM_FIXED_PARTITION all fail.
-	 *
-	 * pm_static.yml fixes the layout, placing nvs_storage at 0x0E5000
-	 * with 512 KB (128 × 4 KB RRAM pages).  The app partition gets the
-	 * remaining 916 KB (0x0 – 0x0E5000), which is ample for this image.
-	 * Use the known values directly and reference rram_controller.
+	 * storage_partition is defined (and its 512 KB size locked) in the
+	 * DTS overlay.  FIXED_PARTITION_* macros read directly from the DTS
+	 * so no hardcoded addresses are needed here.
 	 */
-#define NVS_FLASH_OFFSET  0x0E5000UL
-#define NVS_FLASH_SIZE    (512U * 1024U)  /* 128 x 4 KB RRAM pages */
-
 	struct flash_pages_info page_info;
 	int rc;
 
-	nvs.flash_device = DEVICE_DT_GET(DT_NODELABEL(rram_controller));
+	nvs.flash_device = FIXED_PARTITION_DEVICE(storage_partition);
 	if (!device_is_ready(nvs.flash_device)) {
 		LOG_ERR("NVS flash device not ready");
 		return -ENODEV;
 	}
 
-	nvs.offset = NVS_FLASH_OFFSET;
+	nvs.offset = FIXED_PARTITION_OFFSET(storage_partition);
 
 	rc = flash_get_page_info_by_offs(nvs.flash_device, nvs.offset,
 					 &page_info);
@@ -434,7 +426,8 @@ static int nvs_init_storage(void)
 	}
 
 	nvs.sector_size  = (uint16_t)page_info.size;
-	nvs.sector_count = (uint16_t)(NVS_FLASH_SIZE / page_info.size);
+	nvs.sector_count = (uint16_t)(FIXED_PARTITION_SIZE(storage_partition)
+				  / page_info.size);
 
 	rc = nvs_mount(&nvs);
 	if (rc < 0) {

@@ -13,3 +13,35 @@
 		reg = <0x38>;
 	};
 };
+
+/*
+ * Replace the board-default partition table (MCUBoot + two OTA slots).
+ * This project does not use MCUBoot or OTA, so the two 664 KB OTA slots
+ * and the 64 KB MCUBoot slot are freed.
+ *
+ * cpuapp_rram total: 1428 KB  (0x000000 – 0x165000)
+ *   0x000000 – 0x0E5000  slot0  (app code)   916 KB
+ *   0x0E5000 – 0x165000  storage (NVS)        512 KB  (128 × 4 KB pages)
+ *
+ * slot0_partition is kept so the existing chosen { zephyr,code-partition }
+ * reference continues to resolve; it now starts at 0x0 (no MCUBoot jump).
+ */
+&cpuapp_rram {
+	/delete-node/ partitions;
+
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		slot0_partition: partition@0 {
+			label = "image-0";
+			reg = <0x0 DT_SIZE_K(916)>;
+		};
+
+		storage_partition: partition@e5000 {
+			label = "storage";
+			reg = <0xe5000 DT_SIZE_K(512)>;
+		};
+	};
+};
