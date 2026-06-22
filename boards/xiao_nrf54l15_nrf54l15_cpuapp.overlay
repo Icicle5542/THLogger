@@ -1,9 +1,11 @@
 /*
- * DHT20 temperature and humidity sensor on the XIAO I2C bus
- * DHT20 has a fixed I2C address of 0x38
+ * DHT20 temperature and humidity sensor + LSM6DSO IMU on the XIAO I2C bus.
+ * DHT20 fixed address: 0x38
+ * LSM6DSO fixed address: 0x6A  (accessed via raw I2C — no Zephyr sensor driver)
  */
 
 &xiao_i2c {
+	clock-frequency = <400000>; /* 400 kHz fast mode */
 	status = "okay";
 
 	dht20: dht20@38 {
