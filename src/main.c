@@ -42,12 +42,13 @@ static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 #define NVS_KEY_ENTRY_BASE  10u   /* keys 10 … 10+MAX_LOG_ENTRIES-1  */
 
 /*
- * Reduced from 1000 to 750 to accommodate the larger (32-byte) entry
- * after adding vibration fields: 750 × 40 B ≈ 30 KB in 36 KB partition.
- * Existing entries stored with the old 24-byte struct will show zeros
- * in the vibration columns until the log is cleared with "thlog clear".
+ * NVS partition is now 512 KB (128 × 4 KB RRAM pages) via pm_static.yml.
+ * Usable space: 127 sectors × 4096 B = 520,192 B.
+ * Per entry: 32 B data + 8 B NVS ATE = 40 B  →  max ≈ 13,000 entries.
+ * 10,000 entries × 40 B = 400,000 B — well within budget.
+ * At one entry per 5 minutes: ~34.7 days of continuous logging.
  */
-#define MAX_LOG_ENTRIES     750u
+#define MAX_LOG_ENTRIES     10000u
 
 struct th_log_entry {
 	int64_t timestamp_s;
@@ -406,14 +407,13 @@ static int nvs_init_storage(void)
 	 * "nvs_storage" node.  That virtual node has no reg property, so
 	 * DT_REG_ADDR / DT_REG_SIZE / DT_MTD_FROM_FIXED_PARTITION all fail.
 	 *
-	 * PM_NUM=1 confirms PM does not manage this partition; it is fixed in
-	 * the board DTS (nrf54l15_partition.dtsi).  Use the known values
-	 * directly and reference cpuapp_rram (unaffected by PM) for the device.
-	 *
-	 *   storage_partition@15c000  label="storage"  size=DT_SIZE_K(36)
+	 * pm_static.yml fixes the layout, placing nvs_storage at 0x0E5000
+	 * with 512 KB (128 × 4 KB RRAM pages).  The app partition gets the
+	 * remaining 916 KB (0x0 – 0x0E5000), which is ample for this image.
+	 * Use the known values directly and reference rram_controller.
 	 */
-#define NVS_FLASH_OFFSET  0x15c000UL
-#define NVS_FLASH_SIZE    (36U * 1024U)   /* 9 x 4 KB RRAM pages */
+#define NVS_FLASH_OFFSET  0x0E5000UL
+#define NVS_FLASH_SIZE    (512U * 1024U)  /* 128 x 4 KB RRAM pages */
 
 	struct flash_pages_info page_info;
 	int rc;
