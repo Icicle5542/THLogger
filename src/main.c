@@ -501,7 +501,7 @@ int main(void)
 			gpio_pin_set_dt(&led, 0);
 		}
 
-		k_sleep(K_SECONDS(60));
+		k_sleep(K_SECONDS(5 * 60));
 	}
 
 	return 0;
