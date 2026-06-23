@@ -625,11 +625,6 @@ int main(void)
 {
 	LOG_INF("THLogger starting");
 
-	/* 500 ms blink to signal a successful start */
-	gpio_pin_set_dt(&led, 1);
-	k_sleep(K_MSEC(500));
-	gpio_pin_set_dt(&led, 0);
-
 	/*
 	 * DHT20 requires >=100 ms after VDD power-on before I2C is ready.
 	 * The driver SYS_INIT runs before main(), so guard here.
@@ -692,6 +687,11 @@ int main(void)
 		imu_ready = true;
 	}
 
+	/* 500 ms blink to signal a successful start */
+	gpio_pin_set_dt(&led, 0);
+	k_sleep(K_MSEC(500));
+	gpio_pin_set_dt(&led, 1);
+
 	/* --- Sampling loop ------------------------------------------- */
 	while (1) {
 		/*
@@ -736,9 +736,9 @@ int main(void)
 			log_store_entry(&entry);
 
 			/* 500 ms blink to signal a successful sample */
-			gpio_pin_set_dt(&led, 1);
-			k_sleep(K_MSEC(500));
 			gpio_pin_set_dt(&led, 0);
+			k_sleep(K_MSEC(500));
+			gpio_pin_set_dt(&led, 1);
 		}
 
 		/*
