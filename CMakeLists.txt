@@ -3,4 +3,9 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
 project(THLogger)
 
-target_sources(app PRIVATE src/main.c)
+target_sources(app PRIVATE
+	src/main.c
+	src/imu.c
+	src/pcf8563.c
+	src/dht20.c
+)
