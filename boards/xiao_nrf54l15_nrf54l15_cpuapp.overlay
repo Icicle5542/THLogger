@@ -2,6 +2,7 @@
  * DHT20 temperature and humidity sensor + LSM6DSO IMU on the XIAO I2C bus.
  * DHT20 fixed address: 0x38
  * LSM6DSO fixed address: 0x6A  (accessed via raw I2C — no Zephyr sensor driver)
+ * PCF8563 RTC on the XIAO Expansion Board: 0x51
  */
 
 &xiao_i2c {
@@ -11,6 +12,12 @@
 	dht20: dht20@38 {
 		compatible = "aosong,dht20";
 		reg = <0x38>;
+	};
+
+	pcf8563: pcf8563@51 {
+		compatible = "nxp,pcf8563";
+		reg = <0x51>;
+		status = "okay";
 	};
 };
 

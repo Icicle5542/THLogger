@@ -25,6 +25,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/timeutil.h>
+#include <zephyr/drivers/rtc.h>
 #include <time.h>
 #include <stdio.h>
 #include <string.h>
@@ -34,6 +35,10 @@ LOG_MODULE_REGISTER(main, CONFIG_LOG_DEFAULT_LEVEL);
 /* Built-in LED (led0 alias, active-low on XIAO nRF54L15) */
 #define LED0_NODE DT_ALIAS(led0)
 static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+
+/* PCF8563 RTC on the XIAO Expansion Board (I²C 0x51, battery-backed) */
+#define PCF8563_NODE DT_NODELABEL(pcf8563)
+static const struct device *rtc_dev;
 
 /* ------------------------------------------------------------------ */
 /* NVS layout                                                          */
@@ -397,6 +402,106 @@ static int parse_time_str(const char *s, int *hh, int *mm, int *ss)
 }
 
 /* ------------------------------------------------------------------ */
+/* PCF8563 RTC helpers                                                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Decompose a Unix timestamp into struct rtc_time (UTC).
+ * Uses the same Gregorian algorithm as format_timestamp().
+ */
+static void unix_to_rtc_time(int64_t ts, struct rtc_time *rt)
+{
+	static const uint8_t mdays[12] = {31, 28, 31, 30, 31, 30,
+					  31, 31, 30, 31, 30, 31};
+
+	int64_t days = ts / 86400;
+	int64_t rem  = ts % 86400;
+
+	rt->tm_hour  = (int)(rem / 3600);
+	rt->tm_min   = (int)((rem % 3600) / 60);
+	rt->tm_sec   = (int)(rem % 60);
+	rt->tm_nsec  = 0;
+	/* 1970-01-01 was a Thursday (4); 0=Sunday in tm_wday */
+	rt->tm_wday  = (int)((days + 4) % 7);
+	rt->tm_isdst = -1;
+
+	int year = 1970;
+
+	while (1) {
+		bool leap = ((year % 4 == 0) && (year % 100 != 0)) ||
+			    (year % 400 == 0);
+		int diy = leap ? 366 : 365;
+
+		if (days < diy) {
+			break;
+		}
+		days -= diy;
+		year++;
+	}
+
+	bool leap = ((year % 4 == 0) && (year % 100 != 0)) ||
+		    (year % 400 == 0);
+	int yday  = 0;
+	int month = 1;
+
+	for (int m = 0; m < 12; m++) {
+		int md = mdays[m] + (m == 1 && leap ? 1 : 0);
+
+		if (days < md) {
+			month = m + 1;
+			break;
+		}
+		yday += md;
+		days -= md;
+	}
+
+	rt->tm_year = year - 1900;
+	rt->tm_mon  = month - 1;
+	rt->tm_mday = (int)days + 1;
+	rt->tm_yday = yday + (int)days;
+}
+
+/*
+ * Read the PCF8563 and return the time as Unix seconds.
+ * Returns 0 if the RTC oscillator has not been set or has stopped.
+ */
+static int64_t rtc_read_unix(void)
+{
+	struct rtc_time rt;
+	int rc = rtc_get_time(rtc_dev, &rt);
+
+	if (rc != 0) {
+		LOG_WRN("PCF8563: rtc_get_time failed: %d", rc);
+		return 0;
+	}
+
+	struct tm t = {
+		.tm_year = rt.tm_year,
+		.tm_mon  = rt.tm_mon,
+		.tm_mday = rt.tm_mday,
+		.tm_hour = rt.tm_hour,
+		.tm_min  = rt.tm_min,
+		.tm_sec  = rt.tm_sec,
+	};
+	int64_t ts = timeutil_timegm64(&t);
+
+	return (ts > 0) ? ts : 0;
+}
+
+/* Write a Unix timestamp to the PCF8563. */
+static void rtc_write_unix(int64_t ts)
+{
+	struct rtc_time rt;
+
+	unix_to_rtc_time(ts, &rt);
+	int rc = rtc_set_time(rtc_dev, &rt);
+
+	if (rc != 0) {
+		LOG_WRN("PCF8563: rtc_set_time failed: %d", rc);
+	}
+}
+
+/* ------------------------------------------------------------------ */
 /* NVS helpers                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -577,6 +682,12 @@ static int cmd_thtime_set(const struct shell *sh, size_t argc, char **argv)
 	/* Persist so timestamps survive a reboot */
 	nvs_write(&nvs, NVS_KEY_BASE_TIME, &base_time_s, sizeof(base_time_s));
 
+	/* Write to the PCF8563 — it will keep ticking on battery power */
+	if (rtc_dev != NULL) {
+		rtc_write_unix(base_time_s);
+		shell_print(sh, "PCF8563 RTC updated.");
+	}
+
 	char buf[32];
 
 	format_timestamp(base_time_s, buf, sizeof(buf));
@@ -657,6 +768,33 @@ int main(void)
 			count, count == 1u ? "y" : "ies", MAX_LOG_ENTRIES);
 	} else {
 		LOG_WRN("NVS unavailable — logging disabled");
+	}
+
+	/* --- PCF8563 RTC ------------------------------------------- */
+	/*
+	 * The PCF8563 is battery-backed (CR1220 on the expansion board).
+	 * On every boot, read its time and use it as the reference — this
+	 * gives correct timestamps even after a power cycle without needing
+	 * the user to re-run "thtime set".
+	 */
+	rtc_dev = DEVICE_DT_GET(PCF8563_NODE);
+	if (!device_is_ready(rtc_dev)) {
+		LOG_WRN("PCF8563 RTC not ready — check I2C wiring");
+		rtc_dev = NULL;
+	} else {
+		int64_t rtc_ts = rtc_read_unix();
+
+		if (rtc_ts > 0) {
+			base_time_s    = rtc_ts;
+			base_uptime_ms = k_uptime_get();
+			/* Keep NVS in sync with the RTC value */
+			nvs_write(&nvs, NVS_KEY_BASE_TIME,
+				  &base_time_s, sizeof(base_time_s));
+			LOG_INF("Time loaded from PCF8563 RTC");
+		} else {
+			LOG_WRN("PCF8563: oscillator not set — "
+				 "use \"thtime set\" to initialise");
+		}
 	}
 
 	/* --- DHT20 --------------------------------------------------- */
