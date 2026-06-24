@@ -136,7 +136,7 @@ Current time: 2026-06-23 14:30:05 UTC
 
 ## Log visualisation
 
-`THLogShow.py` reads `thlog.txt` (paste the output of `thlog show` into this file in the project root) and renders a dual-axis line graph of temperature and humidity over sample index.
+`THLogShow.py` reads `thlog.txt` (paste the output of `thlog show` into this file in the project root) and renders a dual-axis line graph of temperature and vibration peak over UTC time.
 
 **Requirements:** Python 3, `pandas`, `matplotlib`
 
@@ -145,9 +145,7 @@ pip install pandas matplotlib
 python THLogShow.py
 ```
 
-The x-axis shows sample index (log order); left y-axis shows temperature (°C) in red; right y-axis shows humidity (%) in blue.
-
-> **Note:** The script currently plots temperature and humidity only. Vibration columns in `thlog show` output are ignored by the parser.
+The x-axis shows UTC timestamps; left y-axis shows temperature (°C) in red; right y-axis shows VibPeak (mg) in blue.
 
 ---
 
