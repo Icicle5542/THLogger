@@ -24,10 +24,11 @@ The LSM6DSO is accessed via raw I²C registers (no Zephyr sensor driver). The DH
 
 Every **5 minutes** the firmware runs one measurement cycle:
 
-1. **Vibration snapshot** (~10 s) — Runs the LSM6DSO accelerometer at 104 Hz for 1 000 samples (10 ms spacing).  
-   Computes two metrics from the per-axis variance (DC/gravity removed over the window):
-   - **RMS acceleration** — combined across X/Y/Z: $\sqrt{\sigma_x^2 + \sigma_y^2 + \sigma_z^2}$, reported in milli-g
-   - **Peak amplitude** — half the observed min/max range per axis, combined as a Euclidean norm, reported in milli-g
+1. **Vibration snapshot** (~10 s) — Runs the LSM6DSO accelerometer at 416 Hz with the on-chip high-pass filter (±2 g, highest sensitivity). Collects one sample per data-ready flag (~4 160 samples).  
+   Designed for **long-running motor vibration** (30+ minutes): when the motor is on, the entire 10 s window contains continuous vibration.  
+   Both metrics are **RMS-based** so brief knocks or glitches are averaged out:
+   - **VibRMS** — combined RSS RMS over the full 10 s window (sustained average level)
+   - **VibPeak** — highest 1 s sub-window combined RMS (strongest sustained second, not a single-sample spike)
 
 2. **Environment sample** — Fetches temperature (°C) and relative humidity (%) from the DHT20 via the Zephyr sensor driver.
 
@@ -186,7 +187,7 @@ THLogger/
 
 | Module | Responsibility |
 |--------|---------------|
-| `imu` | Initialise LSM6DSO; collect 1 000 samples at 104 Hz; compute RMS and peak vibration in milli-g; power down accelerometer between cycles |
+| `imu` | Initialise LSM6DSO; collect ~4 160 samples at 416 Hz with HP filter; compute full-window and max 1 s block combined RMS in milli-g |
 | `pcf8563` | Initialise PCF8563; convert Unix timestamps to/from `struct rtc_time`; read/write the hardware clock |
 | `dht20` | Initialise the Zephyr DHT20 driver; fetch temperature and humidity in one call |
 | `main` | Orchestrate the 5-minute sampling loop; manage NVS ring buffer; expose shell commands |

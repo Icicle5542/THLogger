@@ -4,6 +4,7 @@
  * Serial shell commands (115200 baud on USB/UART):
  *   thlog show          — print all stored log entries
  *   thlog clear         — erase the log
+ *   thlog measure       — trigger an immediate measurement
  *   thtime set <YYYY-MM-DD> <HH:MM:SS>  — set the UTC time reference
  *   thtime get          — print the current derived time
  *
@@ -58,8 +59,8 @@ struct th_log_entry {
 	int32_t temp_val2;
 	int32_t hum_val1;
 	int32_t hum_val2;
-	int32_t vibration_rms_mg;  /* RMS of AC acceleration, milli-g */
-	int32_t vibration_peak_mg; /* One-sided peak amplitude, milli-g */
+	int32_t vibration_rms_mg;  /* Full-window combined RMS, milli-g */
+	int32_t vibration_peak_mg; /* Max 1 s sub-window combined RMS, milli-g */
 };
 
 static struct nvs_fs nvs;
@@ -85,6 +86,9 @@ static int64_t get_timestamp_s(void)
 /* Monotonic write counter (persisted in NVS)                          */
 /* ------------------------------------------------------------------ */
 static uint32_t write_idx;
+
+/* Set true once IMU init succeeds in main(); used by the measure command */
+static bool imu_available;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -317,6 +321,59 @@ static int cmd_thlog_show(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_thlog_measure(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (!nvs_ready) {
+		shell_error(sh, "NVS not available.");
+		return -ENODEV;
+	}
+
+	int32_t vib_rms_mg = 0, vib_peak_mg = 0;
+
+	if (imu_available) {
+		if (imu_sample_vibration(&vib_rms_mg, &vib_peak_mg) != 0) {
+			shell_warn(sh, "IMU: vibration sampling failed");
+		}
+	}
+
+	struct sensor_value temp, humidity;
+
+	if (dht20_measure(&temp, &humidity) != 0) {
+		shell_error(sh, "DHT20 measurement failed.");
+		return -EIO;
+	}
+
+	struct th_log_entry entry = {
+		.timestamp_s       = get_timestamp_s(),
+		.temp_val1         = temp.val1,
+		.temp_val2         = temp.val2,
+		.hum_val1          = humidity.val1,
+		.hum_val2          = humidity.val2,
+		.vibration_rms_mg  = vib_rms_mg,
+		.vibration_peak_mg = vib_peak_mg,
+	};
+
+	int rc = log_store_entry(&entry);
+
+	if (rc < 0) {
+		shell_error(sh, "Failed to store entry: %d", rc);
+		return rc;
+	}
+
+	char timebuf[32];
+
+	format_timestamp(entry.timestamp_s, timebuf, sizeof(timebuf));
+	shell_print(sh, "Measured: %s  %d.%02d C  %d.%02d %%  vib RMS=%d mg  peak=%d mg",
+		    timebuf,
+		    entry.temp_val1, entry.temp_val2 / 10000,
+		    entry.hum_val1,  entry.hum_val2  / 10000,
+		    vib_rms_mg, vib_peak_mg);
+	return 0;
+}
+
 static int cmd_thlog_clear(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
@@ -412,8 +469,9 @@ static int cmd_thtime_get(const struct shell *sh, size_t argc, char **argv)
 /* ------------------------------------------------------------------ */
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_thlog,
-	SHELL_CMD(show,  NULL, "Print all log entries", cmd_thlog_show),
-	SHELL_CMD(clear, NULL, "Erase the log",         cmd_thlog_clear),
+	SHELL_CMD(show,    NULL, "Print all log entries",       cmd_thlog_show),
+	SHELL_CMD(clear,   NULL, "Erase the log",               cmd_thlog_clear),
+	SHELL_CMD(measure, NULL, "Trigger an immediate sample", cmd_thlog_measure),
 	SHELL_SUBCMD_SET_END
 );
 
@@ -506,7 +564,7 @@ int main(void)
 	}
 
 	/* --- IMU (LSM6DSO) ------------------------------------------- */
-	bool imu_available = (imu_init() == 0);
+	imu_available = (imu_init() == 0);
 
 	if (!imu_available) {
 		LOG_WRN("IMU: init failed — vibration logging disabled");
@@ -563,9 +621,7 @@ int main(void)
 		 *    The IMU window already consumed ~10 seconds, so subtract
 		 *    that when the IMU is active to keep a consistent period.
 		 */
-		int sleep_s = (5 * 60) - (imu_available ? (IMU_NUM_SAMPLES *
-							    IMU_SAMPLE_PERIOD_MS /
-							    1000) : 0);
+		int sleep_s = (5 * 60) - (imu_available ? (IMU_SAMPLE_DURATION_MS / 1000) : 0);
 
 		if (sleep_s > 0) {
 			k_sleep(K_SECONDS(sleep_s));
