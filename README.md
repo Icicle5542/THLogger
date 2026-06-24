@@ -15,18 +15,19 @@ Logs are stored persistently in on-chip RRAM and can be retrieved over a serial 
 | IMU | LSM6DSO (STMicroelectronics) — I²C 0x6A | 3-axis accelerometer for vibration measurement |
 | RTC | PCF8563 (NXP) — I²C 0x51 | Battery-backed real-time clock (CR1220 on expansion board) |
 
-All three sensors share the XIAO I²C bus operating at 400 kHz.
+All three sensors share the XIAO I²C bus (`xiao_i2c`) operating at 400 kHz.  
+The LSM6DSO is accessed via raw I²C registers (no Zephyr sensor driver). The DHT20 and PCF8563 use the standard Zephyr drivers.
 
 ---
 
 ## What it does
 
-Every **5 minutes** the firmware:
+Every **5 minutes** the firmware runs one measurement cycle:
 
-1. **Vibration snapshot** — Runs the LSM6DSO accelerometer at 104 Hz for 10 seconds (1 000 samples per axis).  
-   Computes two metrics from the AC component (gravity removed):
-   - **RMS acceleration** — combined across X/Y/Z using one-pass variance: $\sqrt{\sigma_x^2 + \sigma_y^2 + \sigma_z^2}$
-   - **Peak amplitude** — half the observed min/max range per axis, combined as a Euclidean norm
+1. **Vibration snapshot** (~10 s) — Runs the LSM6DSO accelerometer at 104 Hz for 1 000 samples (10 ms spacing).  
+   Computes two metrics from the per-axis variance (DC/gravity removed over the window):
+   - **RMS acceleration** — combined across X/Y/Z: $\sqrt{\sigma_x^2 + \sigma_y^2 + \sigma_z^2}$, reported in milli-g
+   - **Peak amplitude** — half the observed min/max range per axis, combined as a Euclidean norm, reported in milli-g
 
 2. **Environment sample** — Fetches temperature (°C) and relative humidity (%) from the DHT20 via the Zephyr sensor driver.
 
@@ -40,14 +41,33 @@ Every **5 minutes** the firmware:
    | `vibration_rms_mg` | `int32_t` | RMS vibration in milli-g |
    | `vibration_peak_mg` | `int32_t` | Peak vibration in milli-g |
 
-4. **LED blink** — The on-board LED blinks 500 ms to confirm each successful sample.
+   Each entry is 32 bytes of payload; NVS adds an 8-byte allocation table entry (ATE), so budget ~40 bytes per slot.
+
+4. **LED blink** — The on-board LED (active-low `led0`) turns on for 500 ms to confirm each successful sample.
+
+After the IMU window completes, the firmware sleeps for the **remainder** of the 5-minute period (~4 min 50 s when the IMU is available), keeping the overall cadence at one entry every 5 minutes.
+
+### Startup behaviour
+
+On boot the firmware:
+
+1. Waits 200 ms for the DHT20 to become ready after power-on.
+2. Mounts the NVS partition and restores the write index and (if present) a stored time base.
+3. Reads the PCF8563 RTC — if valid, this becomes the authoritative UTC reference and is mirrored back to NVS.
+4. Initialises the DHT20 (required), the IMU (optional), and the LED.
+5. Blinks the LED once for 500 ms to signal a successful start, then enters the sampling loop.
+
+If the DHT20 is missing or not ready, the firmware halts in a sleep loop (the device stays alive but does not log).  
+If the IMU is missing, vibration fields are stored as zero and the full 5-minute sleep is used.  
+If NVS mount fails, shell log commands report an error and new entries are not stored, but temperature/humidity sampling continues.
 
 ### Timekeeping
 
 - On first use, set the time once with `thtime set`.  
   The firmware writes it to the **PCF8563 RTC** (battery-backed) and to NVS.
 - On every subsequent power-up the RTC is read automatically — timestamps remain correct across resets without any user intervention.
-- A software clock derived from `k_uptime_get()` tracks sub-second elapsed time between RTC reads.
+- A software clock derived from `k_uptime_get()` tracks elapsed time between RTC reads.
+- Until time is set, log timestamps display as `(time not set)`.
 
 ### Storage
 
@@ -57,9 +77,13 @@ RRAM layout (1 428 KB total)
 └── 0x0E5000 – 0x165000   NVS storage partition (512 KB)
 ```
 
-- **Capacity:** 10 000 entries × 40 B = 400 KB — well within the 512 KB partition.  
+MCUBoot and OTA slots are **not** used — the partition table is replaced entirely in the board overlay.  
+`sysbuild.conf` disables the NCS Partition Manager so this DTS layout is honoured as-is.
+
+- **Capacity:** 10 000 entries × ~40 B ≈ 400 KB — well within the 512 KB partition.  
 - **Logging duration at 5 min/entry:** ~34.7 days of continuous data.  
-- Ring-buffer wrapping: oldest entry is silently overwritten when the buffer is full.
+- **Ring-buffer wrapping:** when full, the oldest entry is silently overwritten on the next write.
+- **`thlog clear`:** resets the write index only; stale NVS slots remain until overwritten by new entries.
 
 ---
 
@@ -73,7 +97,7 @@ The Zephyr shell is available immediately after boot.
 | Command | Description |
 |---------|-------------|
 | `thlog show` | Print all stored entries in chronological order |
-| `thlog clear` | Erase all log entries (resets write index) |
+| `thlog clear` | Reset the write index (logical erase; NVS slots are not physically wiped) |
 
 Example output of `thlog show`:
 
@@ -83,6 +107,7 @@ Timestamp (UTC)        Temp (C)    Humidity (%)    VibRMS (mg)  VibPeak (mg)
 2026-06-21 19:54:11      27.01        65.83               3           12
 2026-06-21 20:04:40      26.48        67.57               4           15
 ...
+------------------------------------------------------------------------
 250 entries (max 10000).
 ```
 
@@ -104,14 +129,14 @@ uart:~$ thtime get
 Current time: 2026-06-23 14:30:05 UTC
 ```
 
-> **Note:** `thtime set` only needs to be run once after initial flashing.  
+> **Note:** `thtime set` only needs to be run once after initial flashing (or whenever the CR1220 RTC battery is replaced).  
 > The PCF8563 battery backup keeps the time correct across all subsequent power cycles.
 
 ---
 
 ## Log visualisation
 
-`THLogShow.py` reads `thlog.txt` (produced by pasting `thlog show` output into a file) and renders a dual-axis line graph of temperature and humidity.
+`THLogShow.py` reads `thlog.txt` (paste the output of `thlog show` into this file in the project root) and renders a dual-axis line graph of temperature and humidity over sample index.
 
 **Requirements:** Python 3, `pandas`, `matplotlib`
 
@@ -121,6 +146,8 @@ python THLogShow.py
 ```
 
 The x-axis shows sample index (log order); left y-axis shows temperature (°C) in red; right y-axis shows humidity (%) in blue.
+
+> **Note:** The script currently plots temperature and humidity only. Vibration columns in `thlog show` output are ignored by the parser.
 
 ---
 
@@ -136,6 +163,8 @@ west build --pristine -- -DBOARD=xiao_nrf54l15/nrf54l15/cpuapp
 west flash
 ```
 
+The board overlay at `boards/xiao_nrf54l15_nrf54l15_cpuapp.overlay` defines the I²C sensor nodes and the custom RRAM partition table. No extra Kconfig beyond `prj.conf` is required for a standard build.
+
 ---
 
 ## Source structure
@@ -144,7 +173,7 @@ west flash
 THLogger/
 ├── CMakeLists.txt
 ├── prj.conf                        Zephyr Kconfig
-├── sysbuild.conf
+├── sysbuild.conf                   Disable NCS Partition Manager
 ├── boards/
 │   └── xiao_nrf54l15_nrf54l15_cpuapp.overlay   DTS: sensors, RTC, NVS partition
 ├── src/
@@ -159,7 +188,7 @@ THLogger/
 
 | Module | Responsibility |
 |--------|---------------|
-| `imu` | Initialise LSM6DSO; collect 1 000 samples at 104 Hz; compute RMS and peak vibration in milli-g |
+| `imu` | Initialise LSM6DSO; collect 1 000 samples at 104 Hz; compute RMS and peak vibration in milli-g; power down accelerometer between cycles |
 | `pcf8563` | Initialise PCF8563; convert Unix timestamps to/from `struct rtc_time`; read/write the hardware clock |
 | `dht20` | Initialise the Zephyr DHT20 driver; fetch temperature and humidity in one call |
 | `main` | Orchestrate the 5-minute sampling loop; manage NVS ring buffer; expose shell commands |

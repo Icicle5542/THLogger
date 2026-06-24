@@ -7,7 +7,7 @@
  *   thtime set <YYYY-MM-DD> <HH:MM:SS>  — set the UTC time reference
  *   thtime get          — print the current derived time
  *
- * Storage layout (storage_partition, 36 KB at 0x15c000):
+ * Storage layout (storage_partition, 512 KB at 0x0E5000 — see DTS overlay):
  *   NVS key  1 : write_idx   (uint32_t) — monotonic entry counter
  *   NVS key  2 : base_time_s (int64_t)  — unix seconds set by user
  *   NVS key 10…(10+MAX-1) : th_log_entry structs in a circular ring
@@ -63,6 +63,7 @@ struct th_log_entry {
 };
 
 static struct nvs_fs nvs;
+static bool nvs_ready;
 
 /* ------------------------------------------------------------------ */
 /* Software clock                                                       */
@@ -231,6 +232,10 @@ static int nvs_init_storage(void)
 
 static int log_store_entry(const struct th_log_entry *entry)
 {
+	if (!nvs_ready) {
+		return -ENODEV;
+	}
+
 	uint16_t slot = (uint16_t)(write_idx % MAX_LOG_ENTRIES);
 	int rc;
 
@@ -257,6 +262,11 @@ static int cmd_thlog_show(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
+
+	if (!nvs_ready) {
+		shell_error(sh, "NVS not available.");
+		return -ENODEV;
+	}
 
 	uint32_t count = (write_idx < MAX_LOG_ENTRIES) ? write_idx
 						       : MAX_LOG_ENTRIES;
@@ -312,6 +322,11 @@ static int cmd_thlog_clear(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 
+	if (!nvs_ready) {
+		shell_error(sh, "NVS not available.");
+		return -ENODEV;
+	}
+
 	write_idx = 0;
 	int rc = nvs_write(&nvs, NVS_KEY_WRITE_IDX,
 			   &write_idx, sizeof(write_idx));
@@ -363,8 +378,10 @@ static int cmd_thtime_set(const struct shell *sh, size_t argc, char **argv)
 	base_time_s    = timeutil_timegm64(&t);
 	base_uptime_ms = k_uptime_get();
 
-	/* Persist so timestamps survive a reboot */
-	nvs_write(&nvs, NVS_KEY_BASE_TIME, &base_time_s, sizeof(base_time_s));
+	/* Persist so timestamps survive a reboot (RTC is authoritative on boot) */
+	if (nvs_ready) {
+		nvs_write(&nvs, NVS_KEY_BASE_TIME, &base_time_s, sizeof(base_time_s));
+	}
 
 	/* Write to the PCF8563 — it will keep ticking on battery power */
 	if (pcf8563_write_unix(base_time_s) == 0) {
@@ -426,7 +443,7 @@ int main(void)
 	k_sleep(K_MSEC(200));
 
 	/* --- NVS ----------------------------------------------------- */
-	if (nvs_init_storage() == 0) {
+	if ((nvs_ready = (nvs_init_storage() == 0))) {
 		/* Restore the monotonic write counter */
 		if (nvs_read(&nvs, NVS_KEY_WRITE_IDX,
 			     &write_idx, sizeof(write_idx)) < 0) {
@@ -460,8 +477,10 @@ int main(void)
 		if (rtc_ts > 0) {
 			base_time_s    = rtc_ts;
 			base_uptime_ms = k_uptime_get();
-			nvs_write(&nvs, NVS_KEY_BASE_TIME,
-				  &base_time_s, sizeof(base_time_s));
+			if (nvs_ready) {
+				nvs_write(&nvs, NVS_KEY_BASE_TIME,
+					  &base_time_s, sizeof(base_time_s));
+			}
 			LOG_INF("Time loaded from PCF8563 RTC");
 		} else {
 			LOG_WRN("PCF8563: oscillator not set — "
