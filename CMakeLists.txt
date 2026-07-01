@@ -8,4 +8,5 @@ target_sources(app PRIVATE
 	src/imu.c
 	src/pcf8563.c
 	src/dht20.c
+	src/ble_service.c
 )

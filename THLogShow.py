@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from pathlib import Path
 
-LOG_FILE = Path(__file__).parent / "thlog.txt"
+LOG_FILE = Path(__file__).parent / "thlog1.txt"
 
 df = pd.read_csv(
     LOG_FILE,
@@ -26,10 +26,9 @@ ax1.plot(df["datetime"], df["temp_c"], color=color_temp, linewidth=1.2, label="T
 ax1.tick_params(axis="y", labelcolor=color_temp)
 
 ax2 = ax1.twinx()
-color_vib = "tab:blue"
-ax2.set_ylabel("VibPeak (mg)", color=color_vib)
-ax2.plot(df["datetime"], df["vib_peak_mg"], color=color_vib, linewidth=1.2, label="VibPeak (mg)")
-ax2.tick_params(axis="y", labelcolor=color_vib)
+ax2.set_ylabel("Vibration (mg)")
+ax2.plot(df["datetime"], df["vib_rms_mg"], color="tab:blue", linewidth=1.2, label="VibRMS (mg)")
+ax2.plot(df["datetime"], df["vib_peak_mg"], color="tab:orange", linewidth=1.2, label="VibPeak (mg)")
 
 ax1.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
 fig.autofmt_xdate(rotation=30, ha="right")
@@ -38,6 +37,6 @@ lines1, labels1 = ax1.get_legend_handles_labels()
 lines2, labels2 = ax2.get_legend_handles_labels()
 ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
 
-plt.title("Temperature & Vibration Peak Log")
+plt.title("Temperature & Vibration Log")
 plt.tight_layout()
 plt.show()

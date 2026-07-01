@@ -1,3 +1,5 @@
 build*/
 thlog.txt
 __pycache__/THLogShow.cpython-311.pyc
+thlog_ble_*.txt
+__pycache__/THLogBLE.cpython-311.pyc

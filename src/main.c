@@ -7,10 +7,13 @@
  *   thlog measure       — trigger an immediate measurement
  *   thtime set <YYYY-MM-DD> <HH:MM:SS>  — set the UTC time reference
  *   thtime get          — print the current derived time
+ *   thble name          — print current BLE device name
+ *   thble name <name>   — set BLE device name (persisted in NVS, max 29 chars)
  *
  * Storage layout (storage_partition, 512 KB at 0x0E5000 — see DTS overlay):
  *   NVS key  1 : write_idx   (uint32_t) — monotonic entry counter
  *   NVS key  2 : base_time_s (int64_t)  — unix seconds set by user
+ *   NVS key  3 : BLE device name string (max 29 chars)
  *   NVS key 10…(10+MAX-1) : th_log_entry structs in a circular ring
  */
 
@@ -30,6 +33,8 @@
 #include "imu.h"
 #include "pcf8563.h"
 #include "dht20.h"
+#include "thlog_data.h"
+#include "ble_service.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -37,34 +42,18 @@ LOG_MODULE_REGISTER(main, CONFIG_LOG_DEFAULT_LEVEL);
 #define LED0_NODE DT_ALIAS(led0)
 static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 
-/* ------------------------------------------------------------------ */
-/* NVS layout                                                          */
-/* ------------------------------------------------------------------ */
-#define NVS_KEY_WRITE_IDX   1u
-#define NVS_KEY_BASE_TIME   2u
-#define NVS_KEY_ENTRY_BASE  10u   /* keys 10 … 10+MAX_LOG_ENTRIES-1  */
-
 /*
  * NVS partition: 512 KB (128 × 4 KB RRAM pages), defined in the DTS overlay.
  * Usable space: 127 sectors × 4096 B = 520,192 B.
  * Per entry: 32 B data + 8 B NVS ATE = 40 B  →  max ≈ 13,000 entries.
  * 10,000 entries × 40 B = 400,000 B — well within budget.
  * At one entry per 5 minutes: ~34.7 days of continuous logging.
+ *
+ * Key layout, struct, and externs are in thlog_data.h.
  */
-#define MAX_LOG_ENTRIES     10000u
 
-struct th_log_entry {
-	int64_t timestamp_s;
-	int32_t temp_val1;
-	int32_t temp_val2;
-	int32_t hum_val1;
-	int32_t hum_val2;
-	int32_t vibration_rms_mg;  /* Full-window combined RMS, milli-g */
-	int32_t vibration_peak_mg; /* Max 1 s sub-window combined RMS, milli-g */
-};
-
-static struct nvs_fs nvs;
-static bool nvs_ready;
+struct nvs_fs nvs;
+bool nvs_ready;
 
 /* ------------------------------------------------------------------ */
 /* Software clock                                                       */
@@ -77,7 +66,7 @@ static bool nvs_ready;
 static int64_t base_time_s;
 static int64_t base_uptime_ms;
 
-static int64_t get_timestamp_s(void)
+int64_t get_timestamp_s(void)
 {
 	return base_time_s + (k_uptime_get() - base_uptime_ms) / 1000;
 }
@@ -85,7 +74,7 @@ static int64_t get_timestamp_s(void)
 /* ------------------------------------------------------------------ */
 /* Monotonic write counter (persisted in NVS)                          */
 /* ------------------------------------------------------------------ */
-static uint32_t write_idx;
+uint32_t write_idx;
 
 /* Set true once IMU init succeeds in main(); used by the measure command */
 static bool imu_available;
@@ -98,7 +87,7 @@ static bool imu_available;
  * Format a unix timestamp as "YYYY-MM-DD HH:MM:SS".
  * Self-contained Gregorian algorithm — no gmtime() dependency.
  */
-static void format_timestamp(int64_t ts, char *buf, size_t len)
+void format_timestamp(int64_t ts, char *buf, size_t len)
 {
 	static const uint8_t mdays[12] = {31, 28, 31, 30, 31, 30,
 					  31, 31, 30, 31, 30, 31};
@@ -487,6 +476,36 @@ SHELL_CMD_REGISTER(thlog,  &sub_thlog,  "THLogger log commands",  NULL);
 SHELL_CMD_REGISTER(thtime, &sub_thtime, "THLogger time commands", NULL);
 
 /* ------------------------------------------------------------------ */
+/* Shell: thble name                                                    */
+/* ------------------------------------------------------------------ */
+
+static int cmd_thble_name(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc < 2) {
+		shell_print(sh, "BLE name: %s", ble_service_get_name());
+		return 0;
+	}
+
+	int rc = ble_service_set_name(argv[1]);
+
+	if (rc == 0) {
+		shell_print(sh, "BLE name set to: %s", ble_service_get_name());
+	} else {
+		shell_error(sh, "Failed to set BLE name: %d", rc);
+	}
+	return rc;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_thble,
+	SHELL_CMD_ARG(name, NULL,
+		      "Get/set BLE device name: thble name [<newname>]",
+		      cmd_thble_name, 1, 1),
+	SHELL_SUBCMD_SET_END
+);
+
+SHELL_CMD_REGISTER(thble, &sub_thble, "THLogger BLE commands", NULL);
+
+/* ------------------------------------------------------------------ */
 /* main                                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -568,6 +587,11 @@ int main(void)
 
 	if (!imu_available) {
 		LOG_WRN("IMU: init failed — vibration logging disabled");
+	}
+
+	/* --- BLE ----------------------------------------------------- */
+	if (ble_service_init() != 0) {
+		LOG_WRN("BLE: init failed — BLE disabled");
 	}
 
 	/* 500 ms blink to signal a successful start */
